@@ -7,6 +7,7 @@ from random import *
 import sys, termios, tty, select, os
 
 from custom_messages.msg import DMCTS_Travel_Goal
+from custom_messages.srv import Get_A_Star_Path, Get_Kinematic_A_Star_Path
 from hector_uav_msgs.srv import EnableMotors
 from hector_uav_msgs.msg import PoseAction
 from geometry_msgs.msg import Twist, Pose, Point, PoseStamped
@@ -44,18 +45,54 @@ class PID_Controller(object):
     # Setup publisher
     self.pub_twist = rospy.Publisher('/uav' + str(self.index) + '/cmd_vel', Twist, queue_size=10)
     self.sub_odom = rospy.Subscriber('/uav' + str(self.index) + '/ground_truth/state', Odometry, self.odom_callback )
-    self.goal_sub = rospy.Subscriber('/uav' + str(self.index) + '/travel_goal', DMCTS_Travel_Goal, self.goal_callback )
+    self.goal_sub = rospy.Subscriber('/dmcts_' + str(self.index) + '/travel_goal', DMCTS_Travel_Goal, self.goal_callback )
+    self.a_star_client = rospy.Subscriber('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
+    self.kinematic_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/kinematic_path', Get_Kinematic_A_Star_Path)
     
     # only needs to work once
-    rospy.logerr('/uav' + str(self.index) + '/enable_motors')
-    enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
-    enable_motors(True)
+    try:
+      enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
+      enable_motors(True)
+      self.motors_are_on = True
+
+    except:
+      rospy.logwarn('/uav' + str(self.index) + ' could not enable_motors')
+      self.motors_are_on = False
 
     self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_callback)
 
 
   def control_callback(self, event):
-    self.control()      
+    if not self.motors_are_on:
+      try:
+        enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
+        enable_motors(True)
+        self.motors_are_on = True
+
+      except:
+        rospy.logwarn('/uav' + str(self.index) + ' could not enable_motors')
+        rospy.sleep(3)
+        self.motors_are_on = False
+    else:
+      self.control()      
+
+  def a_star_path_callback(self, msg):
+    self.path_xs = msg.xs
+    self.path_ys = msg.ys
+
+    self.goal_loc = np.array([path_xs[0], path_ys[0], self.goal_altitude, 0.0])
+    self.goal_vel = np.array([0.0, 0.0, 0.0, 0.0])
+    self.goal_initialized = True
+
+  def kinematic_path_callback(self, msg):
+    self.path_xs = msg.xs
+    self.path_ys = msg.ys
+    self.thetas = msg.thetas
+    self.speeds = msg.speeds
+
+    self.goal_loc = np.array([path_xs[0], path_ys[0], self.goal_altitude, self.thetas[0]])
+    self.goal_vel = np.array([self.speeds[0]*cos(self.thetas[0]), self.speeds[0]*sin(self.thetas[0]), 0.0, 0.0])
+    self.goal_initialized = True
 
   def goal_callback(self, msg):
     self.goal_loc = np.array([msg.x, msg.y, self.goal_altitude, 0.0])
@@ -108,9 +145,10 @@ class PID_Controller(object):
       self.goal_loc[0] = self.loc[0]
       self.goal_loc[1] = self.loc[1]
       self.goal_loc[2] = self.altitude
-
-
-
+    elif len(self.path) > 1:
+        this needs to check if path length is long and iterate along path_xs
+        check if at point or closer to next point in path
+      
     self.in_loop = True
     #print "loc: ", self.loc
     #print "vel: ", self.vel
