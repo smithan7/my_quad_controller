@@ -14,41 +14,62 @@ from geometry_msgs.msg import Twist, Pose, Point, PoseStamped
 from nav_msgs.msg import Odometry, Path
 
 
+class State(object):
+
+  def __init__(self, xi, yi, zi, ti, fsi, psi, zsi, tsi):
+    self.x = xi # locs
+    self.y = yi # locs
+    self.z = zi # locs
+    self.t = ti # theta
+    self.fs = fsi # forward speed
+    self.ps = psi # perpendicular speed
+    self.zs = zsi # alt vel
+    self.ts = tsi # theta speed
+
+  def print_state(self):
+    print "x,y,z,t: ", self.x, ", ", self.y, ", ", self.z, ", ", self.t
+    print "fs,ps,zs,ts: ", ", ", self.fs, ", ", self.ps, ", ", self.zs, ", ", self.ts
+
+
 class PID_Controller(object):
   index = 0
   agent_type = 0
-  loc = np.array([0.0,0.0,0.0,0.0]) # x,y,z,w
-  vel = np.array([0.0,0.0,0.0,0.0]) # x,y,z,w
+  cLoc = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
+  gLoc = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
+  err = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
+  pid_gains = State(1.0,1.0,0.75,2.0,4.0,4.0,0.1,0.75)
+  max_state = State(50.0,50.0,20.0,50.0,4.0,1.0,0.5,1.0)
+  min_state = State(-50.0,-50.0,2.0,-50.0,-1.0,-1.0,-0.5,-1.0)
   goal_index = -1
-  goal_loc = np.array([0.0,0.0,5.0, 0.0]) # x,y,z,w
-  goal_vel = np.array([0.0,0.0,0.0,0.0]) # x,y,z,w
-
-  proportional = np.array([1.0, 1.0, 0.75, 2.0])
-  derivative = np.array([4.0, 0.0, 0.1, 0.75])
   
-  max_vel = [4.0, 0.5, 1.0]
-  min_vel = [-1.0, -0.5, -1.0]
-
-  max_loc = [50, 50, 20]
-  min_loc = [-50, -50, 2]
-
   update_rate = 100 # hz
   in_loop = False
   initialized = False
   goal_initialized = True
+  path = []
+
+  goal_tolerance = .5
 
   def init(self, ai, aa):
     # Initial values
     self.goal_altitude = aa
-    self.goal_loc[2] = aa
+    self.gLoc.z = aa
     self.index = ai
     # Setup publisher
     self.pub_twist = rospy.Publisher('/uav' + str(self.index) + '/cmd_vel', Twist, queue_size=10)
     self.sub_odom = rospy.Subscriber('/uav' + str(self.index) + '/ground_truth/state', Odometry, self.odom_callback )
     self.goal_sub = rospy.Subscriber('/dmcts_' + str(self.index) + '/travel_goal', DMCTS_Travel_Goal, self.goal_callback )
-    self.a_star_client = rospy.Subscriber('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
+    self.a_star_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
     self.kinematic_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/kinematic_path', Get_Kinematic_A_Star_Path)
     
+    # which planner do I use?
+    self.use_naive_pid = False
+    self.use_a_star_path = True
+    self.use_kinematic_path = False
+
+    # map number, ensure I am planning from the right space
+    self.map_num = -1
+
     # only needs to work once
     try:
       enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
@@ -60,6 +81,7 @@ class PID_Controller(object):
       self.motors_are_on = False
 
     self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_callback)
+    self.path_timer = rospy.Timer(rospy.Duration(2000.0), self.path_callback)
 
 
   def control_callback(self, event):
@@ -68,167 +90,222 @@ class PID_Controller(object):
         enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
         enable_motors(True)
         self.motors_are_on = True
-
       except:
         rospy.logwarn('/uav' + str(self.index) + ' could not enable_motors')
         rospy.sleep(3)
         self.motors_are_on = False
     else:
+      #rospy.loginfo("control_callback: going into control")
       self.control()      
 
-  def a_star_path_callback(self, msg):
-    self.path_xs = msg.xs
-    self.path_ys = msg.ys
 
-    self.goal_loc = np.array([path_xs[0], path_ys[0], self.goal_altitude, 0.0])
-    self.goal_vel = np.array([0.0, 0.0, 0.0, 0.0])
-    self.goal_initialized = True
+  def path_callback(self, event):
+    rospy.loginfo("path_callback:: in")
+    if self.use_naive_pid:
+      return
+    elif self.use_a_star_path:
+      self.call_a_star_path_service(self.gLoc.x, self.gLoc.y)
+    elif self.use_kinematic_path:
+      self.call_kinematic_path_service(-15.0, -15.0)
 
-  def kinematic_path_callback(self, msg):
-    self.path_xs = msg.xs
-    self.path_ys = msg.ys
-    self.thetas = msg.thetas
-    self.speeds = msg.speeds
+  def call_a_star_path_service(self, gx, gy):
+    rospy.logwarn("call_a_star_path_service:: in: gLoc: %i, %i", gx, gy)
+    rospy.logwarn("call_a_star_path_service:: in: start: %i, %i", self.cLoc.x, self.cLoc.y)
+    resp = self.a_star_client(round(self.cLoc.x), round(self.cLoc.y), gx, gy, self.map_num)
+    rospy.logwarn("call_a_star_path_service:: out with path len %i", len(resp.xs))
+    if resp.success:
+      self.path = []
+      for i in range(0, len(resp.xs)):
+        # x,y,z,t,fs,ps,zs,ts
+        if i+1 < len(resp.xs):
+          a = State(resp.xs[i], resp.ys[i], self.goal_altitude, 0.0, 2.0, 0.0, 0.0, 0.0);
+          self.path.append(a)
+        else:
+          a = State(resp.xs[i], resp.ys[i], self.goal_altitude, 0.0, 1.0, 0.0, 0.0, 0.0);
+          self.path.append(a)
+        #print "   ", resp.xs[i], ", ", resp.ys[i]
+        
+      return True
+    else:
+      rospy.logwarn("call_a_star_path_service:: fail")
+      rospy.logwarn("   cLoc: %.2f, %.2f", self.cLoc.x, self.cLoc.y)
+      rospy.logwarn("   gLoc: %.2f, %.2f", gx, gy)
+      self.path = []
+      return False
 
-    self.goal_loc = np.array([path_xs[0], path_ys[0], self.goal_altitude, self.thetas[0]])
-    self.goal_vel = np.array([self.speeds[0]*cos(self.thetas[0]), self.speeds[0]*sin(self.thetas[0]), 0.0, 0.0])
-    self.goal_initialized = True
+  def call_kinematic_path_service(self, gx, gy):
+    
+    resp = self.kinematic_client(self.cLoc.x, self.cLoc.y, self.cLoc.t, self.cLoc.fs, gx, gy, 0.0, 0.0, self.map_num)
+    if resp.success:
+      self.path = []
+      for i in range(0, len(resp.xs)):
+        # x,y,z,t,fs,ps,zs,ts
+        a = State(resp.xs[i], resp.ys[i], self.goal_altitude, resp.thetas[i], resp.speeds[i], 0.0, 0.0, 0.0);
+        self.path.append(a)
+      return True
+    else:
+      self.path.clear()
+      return False
 
   def goal_callback(self, msg):
-    self.goal_loc = np.array([msg.x, msg.y, self.goal_altitude, 0.0])
-    self.goal_vel = np.array([0.0, 0.0, 0.0, 0.0])
-    #rospy.logerr("got goal loc: %.2f, %.2f", msg.x, msg.y)
-    #yaw = self.quaternions_to_RPY([p.pose.pose.orientation.x,msg.pose.pose.orientation.y,msg.pose.pose.orientation.z,msg.pose.pose.orientation.w])
-    #self.goal_loc = np.array([p.pose.pose.position.x, p.pose.pose.position.y, p.pose.pose.position.z, yaw]) 
-    #self.goal_vel = np.array([p.twist.twist.linear.x, p.twist.twist.linear.y, p.twist.twist.linear.z, msg.twist.twist.angular.z])
-    self.goal_initialized = True
+    rospy.loginfo("goal_callback: goal_in: %0.2f, %0.2f", msg.x,msg.y)
+    if self.use_naive_pid:
+      self.path = []
+      self.gLoc.x = msg.x
+      self.gLoc.y = msg.y
+      self.goal_initialized = True
+    elif self.use_a_star_path:
+      if self.call_a_star_path_service(msg.x, msg.y):
+        self.goal_initialized = True
+        a = State(msg.x, msg.y, self.goal_altitude, 0.0, 0.0, 0.0, 0.0, 0.0);
+        self.path.append(a)
+      else:
+        self.goal_initialized = False
+    elif self.use_kinematic_path:
+      if self.call_kinematic_path_service(msg.x, msg.y):
+        self.goal_initialized = True
+        a = State(msg.x, msg.y, self.goal_altitude, 0.0, 0.0, 0.0, 0.0, 0.0);
+        self.path.append(a)
+      else:
+        self.goal_initialized = False
+    else:
+      rospy.logerr("PID_Controller::goal_callback: NO PLANNING METHOD PROVIDED")
+      self.goal_initialized = False
     
 
   def odom_callback(self, msg):
     if self.in_loop == False:
       yaw = self.quaternions_to_RPY([msg.pose.pose.orientation.x,msg.pose.pose.orientation.y,msg.pose.pose.orientation.z,msg.pose.pose.orientation.w])
-      self.loc = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z, yaw]) 
-      self.vel = np.array([msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z, msg.twist.twist.angular.z])
+      self.cLoc.x = msg.pose.pose.position.x
+      self.cLoc.y = msg.pose.pose.position.y
+      self.cLoc.z = msg.pose.pose.position.z
+      self.cLoc.t = yaw 
+      self.cLoc.fs = math.sqrt( msg.twist.twist.linear.x**2 + msg.twist.twist.linear.y**2)
+      self.cLoc.zs = msg.twist.twist.linear.z
+      self.cLoc.ts = msg.twist.twist.angular.z
     
     if self.initialized == False:
-      self.goal_loc[0] = self.loc[0]
-      self.goal_loc[1] = self.loc[1]
-      self.goal_loc[2] = 5.0
+      self.gLoc.x = self.cLoc.x
+      self.gLoc.y = self.cLoc.y
+      self.gLoc.z = 5.0
       self.initialized = True
 
-
   def limit_goals(self):
-    for i in range(0,2):
-      self.goal_loc[i] = min(max(self.goal_loc[i], self.min_loc[i]), self.max_loc[i])
-
-    for i in range(0,2):
-      self.goal_vel[i] = min(max(self.goal_vel[i], self.min_vel[i]), self.max_vel[i])
-
-    self.goal_vel[3] = 0.0
+    self.gLoc.x = min(max(self.gLoc.x, self.min_state.x), self.max_state.x)
+    self.gLoc.y = min(max(self.gLoc.y, self.min_state.y), self.max_state.y)
 
   def limit_twist_out(self, pid):
-    for i in range(0,3):
-      pid[i] = min(max(pid[i], self.min_vel[i]), self.max_vel[i])
-
-    pid[0] = pid[0]*(1-abs(abs(self.goal_loc[3] - self.loc[3]) / 6.28))
-    pid[1] = pid[1]*(1-abs(abs(self.goal_loc[3] - self.loc[3]) / 6.28))
-    pid[0] = pid[0]*(1-abs(abs(self.goal_loc[2] - self.loc[2])))
-    pid[1] = pid[1]*(1-abs(abs(self.goal_loc[2] - self.loc[2])))
-    
+    pid.fs = min(max(pid.fs, self.min_state.fs), self.max_state.fs)
+    pid.ps = min(max(pid.ps, self.min_state.ps), self.max_state.ps)
+    pid.zs = min(max(pid.zs, self.min_state.zs), self.max_state.zs)
+    pid.ts = min(max(pid.ts, self.min_state.ts), self.max_state.ts)
     return pid
+
+  def update_goal(self):
+    # check if I have a long path
+    if len(self.path) > 1 and not self.use_naive_pid:
+      # check if I am at my goal
+      d1 = math.sqrt((self.cLoc.x-self.path[0].x)**2 + (self.cLoc.y-self.path[0].y)**2)
+      if d1 < self.goal_tolerance:
+        self.gLoc.x = self.path[1].x
+        self.gLoc.y = self.path[1].y
+        self.gLoc.z = self.path[1].z
+        self.gLoc.t = self.path[1].t
+        self.gLoc.fs = self.path[1].fs
+      else:
+        # check if I am some how closer to the next wp
+        d2 = math.sqrt((self.cLoc.x-self.path[1].x)**2 + (self.cLoc.y-self.path[1].y)**2)
+        if d2 < d1:
+          self.gLoc.x = self.path[1].x
+          self.gLoc.y = self.path[1].y
+          self.gLoc.z = self.path[1].z
+          self.gLoc.t = self.path[1].t
+          self.gLoc.fs = self.path[1].fs
 
   def control(self):
     if self.initialized == False:
       return
 
     if self.goal_initialized == False:
-      self.goal_loc[0] = self.loc[0]
-      self.goal_loc[1] = self.loc[1]
-      self.goal_loc[2] = self.altitude
+      self.gLoc.x = self.cLoc.x
+      self.gLoc.y = self.cLoc.y
+      self.gLoc.z = self.cLoc.z
     elif len(self.path) > 1:
-        this needs to check if path length is long and iterate along path_xs
-        check if at point or closer to next point in path
-      
-    self.in_loop = True
-    #print "loc: ", self.loc
-    #print "vel: ", self.vel
-    #print "goal: ", self.goal_loc
-    #print "goal_vel: ", self.goal_vel
+      self.update_goal()
 
+    self.in_loop = True
+    
     self.limit_goals()
 
 
-    #self.loc[0] = 33
-    #self.loc[1] = 81
-    #self.loc[3] = -1.88
+    #self.cLoc.x = 33
+    #self.cLoc.y = 81
+    #self.cLoc.t = -1.88
 
-    #print "Goal: ", round(self.goal_loc[0],2), ", ", round(self.goal_loc[1],2)
-    #print "Loc: ", round(self.loc[0],2), ", ", round(self.loc[1],2), ", ", round(self.loc[3]*67.3,2)
+    #print "******************** Goal *******************************"
+    #self.gLoc.print_state()
+    #print "******************** cLoc *******************************"
+    #self.cLoc.print_state()
 
     # theta = 0 -> 2*pi
-    self.loc[3] += 6.28318530718
-    self.loc[3] = self.loc[3] % 6.28318530718
+    self.cLoc.t += 6.28318530718
+    self.cLoc.t = self.cLoc.t % 6.28318530718
 
     # move goal to local frame
-    [g_dx, g_dy, self.goal_loc[3]] = self.position_from_a_to_b(self.loc, self.goal_loc)
-    [l_dx, l_dy] = self.global_to_local_frame(g_dx, g_dy, self.loc[3])
-
-    #print "gd: ", round(g_dx,2), ", ", round(g_dy,2), ", ", round(self.goal_loc[3]*57.3,2)
-    #print "ld: ", round(l_dx,2), ", ", round(l_dy,2)
-
+    [g_dx, g_dy, self.gLoc.t] = self.position_from_a_to_b(self.cLoc, self.gLoc)
+    [l_dx, l_dy] = self.global_to_local_frame(g_dx, g_dy, self.cLoc.t)
+    self.global_to_local_vel()
+    
 
     # theta 0 -> 2 pi
-    self.goal_loc[3] += 6.28318530718
-    self.goal_loc[3] = self.goal_loc[3] % 6.28318530718
+    self.gLoc.t += 6.28318530718
+    self.gLoc.t = self.gLoc.t % 6.28318530718
 
     # fix roll over
-    if self.loc[3] < 3.14159265359/2.0 and self.goal_loc[3] > 3.0*3.14159265359/4.0:
-      self.goal_loc[3] = self.goal_loc[3] - 6.28318530718
-    elif self.loc[3] > 3.0*3.14159265359/4.0 and self.goal_loc[3] < 3.14159265359/2.0:
-      self.goal_loc[3] = self.goal_loc[3] + 6.28318530718
-    #print "loc[3]: ", self.loc[3]
-
-    error_loc = self.goal_loc - self.loc
-    error_loc[0] = l_dx
-    error_loc[1] = l_dy
-
-
-    if abs(error_loc[0]) + abs(error_loc[1]) < 1.0:
-      error_loc[3] = 0.0
-
-    if abs(error_loc[2]) > 1.0:
-      error_loc[0] = 0.0
-      error_loc[1] = 0.0
+    if self.cLoc.t < 3.14159265359/2.0 and self.gLoc.t > 3.0*3.14159265359/4.0:
+      self.gLoc.t = self.gLoc.t - 6.28318530718
+    elif self.cLoc.t > 3.0*3.14159265359/4.0 and self.gLoc.t < 3.14159265359/2.0:
+      self.gLoc.t = self.gLoc.t + 6.28318530718
     
-    #print "error_loc: ", round(error_loc[0],2), ", ", round(error_loc[1],2), ", ", round(error_loc[2],2), ", ", round(error_loc[3]*57.3,2)
-    p = np.multiply(self.proportional, error_loc)
-    #print "proportional: ", round(p[0],2), ", ", round(p[1],2), ", ", round(p[2],2), ", ", round(p[3],2)
+    # get error
+    self.err.x = l_dx
+    self.err.y = l_dy
+    self.err.z = self.gLoc.z - self.cLoc.z
+    self.err.t = self.gLoc.t - self.cLoc.t
 
-    self.global_to_local_vel()
-    error_vel = self.goal_vel - self.vel
-    if abs(error_vel[0]) < self.max_vel[0]:
-      error_vel[0] = 0
-    #print "error_vel: ", round(error_vel[0],2), ", ", round(error_vel[1],2), ", ", round(error_vel[2],2), ", ", round(error_vel[3],2)
-    d = np.multiply(np.sign(error_vel), np.multiply(self.derivative, error_vel))
-    #print "sign(error_vel): ", np.sign(error_vel)
-    #print "self.vel: ", round(self.vel[0],2), ", ", round(self.vel[1],2), ", ", round(self.vel[2],2), ", ", round(self.vel[3],2)
-    #print "derivative: ", round(d[0],2), ", ", round(d[1],2), ", ", round(d[2],2), ", ", round(d[3],2)
+    if abs(self.err.x) + abs(self.err.y) < 1.0:
+      self.err.t = 0.0
 
-    pid = p + d 
-    #print "PID: ", round(pid[0],2), ", ", round(pid[1],2), ", ", round(pid[2],2), ", ", round(pid[3],2)
+    if abs(self.err.z) > 1.0:
+      self.err.x = 0.0
+      self.err.y = 0.0
+    
+    self.err.fs = self.gLoc.fs - self.cLoc.fs
+    self.err.zs = self.gLoc.zs - self.cLoc.zs
+    self.err.ts = self.gLoc.ts - self.cLoc.ts
+    
+    if abs(self.err.fs) < self.max_state.fs:
+      self.err.fs = 0
+    
+
+    pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
+    pid.fs = self.pid_gains.fs * self.err.fs + self.pid_gains.x * self.err.x
+    pid.ps = self.pid_gains.ps * self.err.ps + self.pid_gains.y * self.err.y
+    pid.zs = self.pid_gains.zs * self.err.zs + self.pid_gains.z * self.err.z
+    pid.ts = self.pid_gains.ts * self.err.ts + self.pid_gains.t * self.err.t
+    
+    #print "***************************** pid ***************************"
+    #pid.print_state()
 
     pid = self.limit_twist_out(pid)
-    #print "PID: ", round(pid[0],2), ", ", round(pid[1],2), ", ", round(pid[2],2), ", ", round(pid[3],2)
-
+    
     twist = Twist()  
-    twist.linear.x = pid[0]
-    twist.linear.y = pid[1]
-    twist.linear.z = pid[2]
-    twist.angular.z = pid[3]
+    twist.linear.x = pid.fs
+    twist.linear.y = pid.ps
+    twist.linear.z = pid.zs
+    twist.angular.z = pid.ts
     #print "twist: ", twist
     self.pub_twist.publish(twist) 
-
-    #ch = raw_input()
     self.in_loop = False
 
   def global_to_local_frame(self, gx, gy, gw):
@@ -238,22 +315,22 @@ class PID_Controller(object):
     return [lx, ly]
 
   def global_to_local_vel(self):
-    vx = self.vel[0]*math.cos(self.loc[3]) + self.vel[1]*math.sin(self.loc[3])
-    vy = -self.vel[0]*math.sin(self.loc[3]) + self.vel[1]*math.cos(self.loc[3])
-    self.vel[0] = vx
-    self.vel[1] = vy
+    vx = self.cLoc.fs*math.cos(self.cLoc.t) + self.cLoc.ps*math.sin(self.cLoc.t)
+    vy = -self.cLoc.fs*math.sin(self.cLoc.t) + self.cLoc.ps*math.cos(self.cLoc.t)
+    self.cLoc.fs = vx
+    self.cLoc.ps = vy
 
   def position_from_a_to_b( self, a, b ):
-    x = b[0] - a[0]
-    y = b[1] - a[1]
+    x = b.x - a.x
+    y = b.y - a.y
     heading = math.atan2(y, x)
 
     return [x,y,heading]
 
   def at_goal(self):
-    error_loc = math.sqrt((self.goal_loc[0] - self.loc[0])**2 + (self.goal_loc[1] - self.loc[1])**2  + (self.goal_loc[2] - self.loc[2])**2)
-    error_yaw = abs(self.goal_loc[3] - self.loc[3])
-    if (error_loc < 1.0 and error_yaw < 8.0):
+    self.err = math.sqrt((self.gLoc.x - self.cLoc.x)**2 + (self.gLoc.y - self.cLoc.y)**2  + (self.gLoc.z - self.cLoc.z)**2)
+    error_yaw = abs(self.gLoc.t - self.cLoc.t)
+    if (self.err < 1.0 and error_yaw < 8.0):
       return True
     else:
       return False
