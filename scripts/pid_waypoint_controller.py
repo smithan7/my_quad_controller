@@ -38,7 +38,7 @@ class PID_Controller(object):
   gLoc = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   err = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   pid_gains = State(1.0,1.0,0.75,2.0,4.0,4.0,0.1,0.75)
-  max_state = State(50.0,50.0,20.0,50.0,2.0,0.2,1.0,1.0)
+  max_state = State(50.0,50.0,30.0,50.0,2.0,0.2,1.0,1.0)
   min_state = State(-50.0,-50.0,2.0,-50.0,-0.25,-0.2,-1.0,-1.0)
   pid_mean = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
   goal_index = -1
@@ -193,7 +193,7 @@ class PID_Controller(object):
     if self.initialized == False:
       self.gLoc.x = self.cLoc.x
       self.gLoc.y = self.cLoc.y
-      self.gLoc.z = 5.0
+      self.gLoc.z = self.goal_altitude
       self.initialized = True
 
   def limit_goals(self):
@@ -299,7 +299,7 @@ class PID_Controller(object):
 
     # put in some safety stuff
     # don't spin at goal
-    if abs(self.err.x) + abs(self.err.y) < 0.5:
+    if abs(self.err.x) + abs(self.err.y) < self.goal_tolerance:
       self.err.t = 0.0
       self.err.ts = 0.0
 
@@ -374,12 +374,11 @@ if __name__ == '__main__':
   rospy.init_node('pid_postion_control')
   pid = PID_Controller()
   ai = rospy.get_param('agent_index')
-  #aa = rospy.get_param('agent_altitude')
-  aa = float(ai+1)*2.5 + 5.0
+  aa = rospy.get_param('desired_altitude')
 
   rospy.loginfo("Quad PID Controller::initializing")
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
-  rospy.loginfo(" Quad PID Controller::agent altitude: %i", aa)
+  rospy.loginfo(" Quad PID Controller::agent altitude: %.1f", aa)
   
   pid.init(ai, aa)
   rospy.loginfo("Quad PID Controller::initialized")
