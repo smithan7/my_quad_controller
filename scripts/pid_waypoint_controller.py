@@ -38,8 +38,9 @@ class PID_Controller(object):
   gLoc = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   err = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   pid_gains = State(1.0,1.0,0.75,2.0,4.0,4.0,0.1,0.75)
-  max_state = State(50.0,50.0,20.0,50.0,4.0,1.0,0.5,1.0)
-  min_state = State(-50.0,-50.0,2.0,-50.0,-1.0,-1.0,-0.5,-1.0)
+  max_state = State(50.0,50.0,20.0,50.0,2.0,0.2,1.0,1.0)
+  min_state = State(-50.0,-50.0,2.0,-50.0,-0.25,-0.2,-1.0,-1.0)
+  pid_mean = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
   goal_index = -1
   
   update_rate = 100 # hz
@@ -106,22 +107,27 @@ class PID_Controller(object):
     elif self.use_a_star_path:
       self.call_a_star_path_service(self.gLoc.x, self.gLoc.y)
     elif self.use_kinematic_path:
-      self.call_kinematic_path_service(-15.0, -15.0)
+      self.call_kinematic_path_service(self.gLoc.x, self.gLoc.y)
 
   def call_a_star_path_service(self, gx, gy):
-    rospy.logwarn("call_a_star_path_service:: in: gLoc: %i, %i", gx, gy)
-    rospy.logwarn("call_a_star_path_service:: in: start: %i, %i", self.cLoc.x, self.cLoc.y)
+    #rospy.logwarn("call_a_star_path_service:: in: gLoc: %i, %i", gx, gy)
+    #rospy.logwarn("call_a_star_path_service:: in: start: %i, %i", self.cLoc.x, self.cLoc.y)
     resp = self.a_star_client(round(self.cLoc.x), round(self.cLoc.y), gx, gy, self.map_num)
-    rospy.logwarn("call_a_star_path_service:: out with path len %i", len(resp.xs))
+    #rospy.logwarn("call_a_star_path_service:: out with path len %i", len(resp.xs))
     if resp.success:
       self.path = []
       for i in range(0, len(resp.xs)):
+        t = 0.0
+        if i > 0:
+          t = math.atan2(resp.ys[i]-resp.ys[i-1], resp.xs[i]-resp.xs[i-1])
+        else:
+          t = math.atan2(resp.ys[i]-self.cLoc.x, resp.xs[i]-self.cLoc.y)
         # x,y,z,t,fs,ps,zs,ts
         if i+1 < len(resp.xs):
-          a = State(resp.xs[i], resp.ys[i], self.goal_altitude, 0.0, 2.0, 0.0, 0.0, 0.0);
+          a = State(resp.xs[i], resp.ys[i], self.goal_altitude, t, 2.0, 0.0, 0.0, 0.0);
           self.path.append(a)
         else:
-          a = State(resp.xs[i], resp.ys[i], self.goal_altitude, 0.0, 1.0, 0.0, 0.0, 0.0);
+          a = State(resp.xs[i], resp.ys[i], self.goal_altitude, t, 0.0, 0.0, 0.0, 0.0);
           self.path.append(a)
         #print "   ", resp.xs[i], ", ", resp.ys[i]
         
@@ -144,11 +150,11 @@ class PID_Controller(object):
         self.path.append(a)
       return True
     else:
-      self.path.clear()
+      self.path = []
       return False
 
   def goal_callback(self, msg):
-    rospy.loginfo("goal_callback: goal_in: %0.2f, %0.2f", msg.x,msg.y)
+    #rospy.loginfo("goal_callback: goal_in: %0.2f, %0.2f", msg.x,msg.y)
     if self.use_naive_pid:
       self.path = []
       self.gLoc.x = msg.x
@@ -247,9 +253,12 @@ class PID_Controller(object):
     #print "******************** cLoc *******************************"
     #self.cLoc.print_state()
 
+    pi = 3.14159265359
+    tpi = 6.28318530718
+
     # theta = 0 -> 2*pi
-    self.cLoc.t += 6.28318530718
-    self.cLoc.t = self.cLoc.t % 6.28318530718
+    self.cLoc.t += tpi
+    self.cLoc.t = self.cLoc.t % tpi
 
     # move goal to local frame
     [g_dx, g_dy, self.gLoc.t] = self.position_from_a_to_b(self.cLoc, self.gLoc)
@@ -258,14 +267,25 @@ class PID_Controller(object):
     
 
     # theta 0 -> 2 pi
-    self.gLoc.t += 6.28318530718
-    self.gLoc.t = self.gLoc.t % 6.28318530718
+    self.gLoc.t += tpi
+    self.gLoc.t = self.gLoc.t % tpi
 
     # fix roll over
-    if self.cLoc.t < 3.14159265359/2.0 and self.gLoc.t > 3.0*3.14159265359/4.0:
-      self.gLoc.t = self.gLoc.t - 6.28318530718
-    elif self.cLoc.t > 3.0*3.14159265359/4.0 and self.gLoc.t < 3.14159265359/2.0:
-      self.gLoc.t = self.gLoc.t + 6.28318530718
+    dt = abs(self.gLoc.t - self.cLoc.t)
+    dtp = abs(self.gLoc.t - self.cLoc.t + tpi)
+    dtm = abs(self.gLoc.t - self.cLoc.t - tpi)
+    #rospy.loginfo("cLoc.t: %0.2f", self.cLoc.t*360.0/tpi)
+    #rospy.loginfo("gLoc.t: %0.2f", self.gLoc.t*360.0/tpi)
+    #rospy.loginfo("dt: %0.2f", dt*360.0/tpi)
+    #rospy.loginfo("dtp: %0.2f", dtp*360.0/tpi)
+    #rospy.loginfo("dtm: %0.2f", dtm*360.0/tpi)
+
+
+    if dtp < dt:
+      self.gLoc.t += tpi
+    elif dtm < dt:
+      self.gLoc.t -= tpi
+    #rospy.loginfo("gLoc.t': %0.2f", self.gLoc.t*360.0/tpi)
     
     # get error
     self.err.x = l_dx
@@ -273,21 +293,23 @@ class PID_Controller(object):
     self.err.z = self.gLoc.z - self.cLoc.z
     self.err.t = self.gLoc.t - self.cLoc.t
 
-    if abs(self.err.x) + abs(self.err.y) < 1.0:
-      self.err.t = 0.0
-
-    if abs(self.err.z) > 1.0:
-      self.err.x = 0.0
-      self.err.y = 0.0
-    
     self.err.fs = self.gLoc.fs - self.cLoc.fs
     self.err.zs = self.gLoc.zs - self.cLoc.zs
     self.err.ts = self.gLoc.ts - self.cLoc.ts
-    
-    if abs(self.err.fs) < self.max_state.fs:
-      self.err.fs = 0
-    
 
+    # put in some safety stuff
+    # don't spin at goal
+    if abs(self.err.x) + abs(self.err.y) < 0.5:
+      self.err.t = 0.0
+      self.err.ts = 0.0
+
+    # don't travel while at the wrong alt or pointing in the wrong direction
+    if abs(self.err.z) > 1 or abs(self.err.t) > pi/6:
+      self.err.x = 0.0
+      self.err.y = 0.0
+      self.err.fs = 0.0
+    
+    
     pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
     pid.fs = self.pid_gains.fs * self.err.fs + self.pid_gains.x * self.err.x
     pid.ps = self.pid_gains.ps * self.err.ps + self.pid_gains.y * self.err.y
@@ -299,11 +321,18 @@ class PID_Controller(object):
 
     pid = self.limit_twist_out(pid)
     
+    alpha = [0.05, 0.5, 0.9]
+    self.pid_mean.fs = self.pid_mean.fs - alpha[0]*(self.pid_mean.fs-pid.fs)
+    self.pid_mean.ps = self.pid_mean.ps - alpha[1]*(self.pid_mean.ps-pid.ps)
+    self.pid_mean.zs = self.pid_mean.zs - alpha[2]*(self.pid_mean.zs-pid.zs)
+    self.pid_mean.ts = pid.ts
+
     twist = Twist()  
-    twist.linear.x = pid.fs
-    twist.linear.y = pid.ps
-    twist.linear.z = pid.zs
-    twist.angular.z = pid.ts
+    twist.linear.x = self.pid_mean.fs
+    twist.linear.y = self.pid_mean.ps
+    twist.linear.z = self.pid_mean.zs
+    twist.angular.z = self.pid_mean.ts
+
     #print "twist: ", twist
     self.pub_twist.publish(twist) 
     self.in_loop = False
