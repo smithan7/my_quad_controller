@@ -1,0 +1,9 @@
+
+
+<launch>
+	<node pkg="my_quad_controller" name="move_base_pass_through" type="move_base_path_through.py" output="screen"/>
+    <param name="agent_index" value="0"/>
+    <param name="desired_alt" value="10.0"/>
+</launch>
+
+

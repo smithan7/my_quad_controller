@@ -1,0 +1,10 @@
+<launch>
+    <arg name="a_cp" default="/dev/ttyUSB0"/>
+    <arg name="a_br" default="9600"/>
+
+	<node pkg="xbee_bridge" name="Xbee" type="xbee.py"/>
+	<param name="com_port" type="string" value="$(arg a_cp)"/>
+	<param name="baud_rate" type="int" value="$(arg a_br)"/>
+</launch>
+
+
