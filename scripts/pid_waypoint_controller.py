@@ -54,10 +54,12 @@ class PID_Controller(object):
   goal_tolerance = 0.5
   control_radius = 5.0
 
-  def init(self, ai, aa):
+  def init(self, ai, aa, cs):
+    self.max_state[4] = cs
+    self.min_state[4] = -cs;
     # Initial values
     self.goal.z = aa
-    self.cruising_speed = 5.0
+    self.cruising_speed = cs
     self.index = ai
     # Setup publisher
     self.pub_twist = rospy.Publisher('/uav' + str(self.index) + '/cmd_vel', Twist, queue_size=10)
@@ -500,11 +502,13 @@ if __name__ == '__main__':
   pid = PID_Controller()
   ai = rospy.get_param('agent_index')
   aa = rospy.get_param('desired_altitude')
+  cs = rospy.get_param('cruising_speed')
 
   rospy.loginfo("Quad PID Controller::initializing")
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
   rospy.loginfo(" Quad PID Controller::agent altitude: %.1f", aa)
+  rospy.loginfo(" Quad PID Controller::cruising speed: %.1f", cs)
   
-  pid.init(ai, aa)
+  pid.init(ai, aa, cs)
   rospy.loginfo("Quad PID Controller::initialized")
   rospy.spin()
