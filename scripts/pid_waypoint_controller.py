@@ -55,8 +55,8 @@ class PID_Controller(object):
   control_radius = 5.0
 
   def init(self, ai, aa, cs):
-    self.max_state[4] = cs
-    self.min_state[4] = -cs;
+    self.max_state.fs = cs
+    self.min_state.fs = -cs;
     # Initial values
     self.goal.z = aa
     self.cruising_speed = cs
@@ -500,9 +500,9 @@ class PID_Controller(object):
 if __name__ == '__main__':
   rospy.init_node('pid_postion_control')
   pid = PID_Controller()
-  ai = rospy.get_param('agent_index')
-  aa = rospy.get_param('desired_altitude')
-  cs = rospy.get_param('cruising_speed')
+  ai = rospy.get_param('/agent_index')
+  aa = rospy.get_param('/desired_altitude')
+  cs = rospy.get_param('/cruising_speed')
 
   rospy.loginfo("Quad PID Controller::initializing")
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
