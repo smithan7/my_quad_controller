@@ -34,10 +34,10 @@ class State(object):
 class PID_Controller(object):
   index = 0
   agent_type = 0
+  start = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   cLoc = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   carrot = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   goal = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
-  #err = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   pid_cruise_gains = State(1.0,0.1,0.75,2.0,8.0,4.0,0.1,0.75)
   pid_approach_gains = State(0.5,0.5,0.75,2.0,1.0,1.0,0.1,0.75)
   max_state = State(50.0,50.0,30.0,50.0,2.0,0.2,1.0,1.0)
@@ -68,12 +68,10 @@ class PID_Controller(object):
     self.sub_odom = rospy.Subscriber('/uav' + str(self.index) + '/ground_truth/state', Odometry, self.odom_callback )
     self.goal_sub = rospy.Subscriber('/dmcts_' + str(self.index) + '/travel_goal', DMCTS_Travel_Goal, self.goal_callback )
     self.a_star_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
-    self.kinematic_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/kinematic_path', Get_Kinematic_A_Star_Path)
     
     # which planner do I use?
     self.use_naive_pid = False
     self.use_a_star_path = True
-    self.use_kinematic_path = False
 
     # map number, ensure I am planning from the right space
     self.map_num = -1
@@ -89,10 +87,10 @@ class PID_Controller(object):
       self.motors_are_on = False
 
     self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_timer_callback)
-    # dont need, goal callbac covers self.path_timer = rospy.Timer(rospy.Duration(20000.0), self.path_timer_callback)
 
 
   def control_timer_callback(self, event):
+    #rospy.logwarn("PID_Controller::control_timer_callback: in")
     if not self.motors_are_on:
       try:
         enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
@@ -110,17 +108,6 @@ class PID_Controller(object):
         self.control_approach() ## close to goal, slow down
       else:
         self.control_cruise() ## cruising controller
-
-
-  def path_timer_callback(self, event):
-    rospy.loginfo("path_callback:: in")
-    if self.use_naive_pid:
-      return
-    elif self.use_a_star_path:
-      self.call_a_star_path_service(self.goal.x, self.goal.y)
-    elif self.use_kinematic_path:
-      self.call_kinematic_path_service(self.goal.x, self.goal.y)
-
 
   def make_rviz_marker(self, p, i, r, g, b, s,d):
     m = Marker()
@@ -150,12 +137,13 @@ class PID_Controller(object):
 
   def call_a_star_path_service(self, gx, gy):
     try:
-      #rospy.logwarn("call_a_star_path_service:: in: carrot: %i, %i", gx, gy)
-      #rospy.logwarn("call_a_star_path_service:: in: start: %i, %i", self.cLoc.x, self.cLoc.y)
-      resp = self.a_star_client(round(self.cLoc.x), round(self.cLoc.y), gx, gy, self.map_num)
+      #rospy.logwarn("PID_Controller::call_a_star_path_service:: in: start: %i, %i", self.cLoc.x, self.cLoc.y)
+      #rospy.logwarn("PID_Controller::call_a_star_path_service:: in: goal: %i, %i", gx, gy)
+      resp = self.a_star_client(self.cLoc.x, self.cLoc.y, float(gx), float(gy), self.map_num)
       #rospy.logwarn("call_a_star_path_service:: out with path len %i", len(resp.xs))
       if resp.success:
         self.path = []
+        #path_str = []
         for i in range(0, len(resp.xs)):
           t = 0.0
           if i > 0:
@@ -169,8 +157,9 @@ class PID_Controller(object):
           else:
             a = State(resp.xs[i], resp.ys[i], self.goal.z, t, 0.0, 0.0, 0.0, 0.0);
             self.path.append(a)
-          #print "   ", resp.xs[i], ", ", resp.ys[i]
-          
+          #path_str.append("[ " + str(resp.xs[i]) + ", " + str(resp.ys[i]) + " ], ")
+        
+        #print path_str
         return True
       else:
         rospy.logwarn("call_a_star_path_service:: fail")
@@ -181,47 +170,29 @@ class PID_Controller(object):
     except:
       rospy.logerr("PID Controller:: Failed to call A* service")
 
-  def call_kinematic_path_service(self, gx, gy):
-    
-    rospy.loginfo("requesting path")
-    resp = self.kinematic_client(self.cLoc.x, self.cLoc.y, self.cLoc.t, self.cLoc.fs, gx, gy, 0.0, 0.0, self.map_num)
-    if resp.success:
-      self.path = []
-      for i in range(0, len(resp.xs)):
-        # x,y,z,t,fs,ps,zs,ts
-        a = State(resp.xs[i], resp.ys[i], self.goal.z, resp.thetas[i], resp.speeds[i], 0.0, 0.0, 0.0);
-        self.path.append(a)
-      return True
-    else:
-      rospy.logwarn("PID_Controller::failed to get kinematic_path from service")
-      self.path = []
-      return False
-
   def goal_callback(self, msg):
-    #rospy.loginfo("goal_callback: goal_in: %0.2f, %0.2f", msg.x,msg.y)
+    #rospy.loginfo("PID_Controller::goal_callback: goal_in: %0.2f, %0.2f from loc %.2f, %.2f", msg.x,msg.y, self.cLoc.x, self.cLoc.y)
+    #if self.goal.x == msg.x and self.goal.y == msg.y:
+    #  return
     if self.use_naive_pid:
       self.path = []
       self.goal.x = msg.x
       self.goal.y = msg.y
+      self.carrot.x = msg.x
+      self.carrot.y = msg.y
       self.goal_initialized = True
+      #rospy.loginfo("PID_Controller::goal_callback: goal_set")
     elif self.use_a_star_path:
       if self.call_a_star_path_service(msg.x, msg.y):
         self.goal_initialized = True
         a = State(msg.x, msg.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
         self.path.append(a)
         self.goal.x = msg.x
-        self.goal.y = msg.y  
-      else:
-        self.goal_initialized = False
-    elif self.use_kinematic_path:
-      if self.call_kinematic_path_service(msg.x, msg.y):
-        self.goal_initialized = True
-        a = State(msg.x, msg.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
-        self.path.append(a)
-        self.goal.x = msg.x
         self.goal.y = msg.y
+        #rospy.loginfo("PID_Controller::goal_callback: path set")
       else:
         self.goal_initialized = False
+        rospy.logerr("PID_Controller::goal_callback: failed to get A* path")
     else:
       rospy.logerr("PID_Controller::goal_callback: NO PLANNING METHOD PROVIDED")
       self.goal_initialized = False
@@ -232,6 +203,7 @@ class PID_Controller(object):
     
 
   def odom_callback(self, msg):
+    #rospy.logwarn("PID_Controller::odom_callback: in")
     if self.in_loop == False:
       yaw = self.quaternions_to_RPY([msg.pose.pose.orientation.x,msg.pose.pose.orientation.y,msg.pose.pose.orientation.z,msg.pose.pose.orientation.w])
       self.cLoc.x = msg.pose.pose.position.x
@@ -243,8 +215,10 @@ class PID_Controller(object):
       self.cLoc.ts = msg.twist.twist.angular.z
     
     if self.initialized == False:
-      self.carrot.x = self.cLoc.x
-      self.carrot.y = self.cLoc.y
+      self.start.x = self.cLoc.x
+      self.start.y = self.cLoc.y
+      self.carrot.x = self.start.x
+      self.carrot.y = self.start.y
       self.carrot.z = self.goal.z
       self.initialized = True
 
@@ -260,17 +234,24 @@ class PID_Controller(object):
     return pid
 
   def update_goal(self):
+    #rospy.loginfo("in update_goal")
     # check if I have a long path
-    if len(self.path) > 1 and not self.use_naive_pid:
+    if self.use_naive_pid:
+      self.carrot = self.goal
+      return
+
+    if len(self.path) > 1:
       pp = self.path
-      if math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2) < self.control_radius:
+      dd = math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2)
+      if dd < self.control_radius:
         # check if I am at my goal
         self.carrot = self.goal
         return
-
       for i in reversed(range(0,len(pp))):
         # find the point along the path that maximizes the distance from me and is less than some distance
-        if math.sqrt((self.cLoc.x-pp[i].x)**2 + (self.cLoc.y-pp[i].y)**2) < self.control_radius:
+        dd = math.sqrt((self.cLoc.x-pp[i].x)**2 + (self.cLoc.y-pp[i].y)**2)
+        #rospy.loginfo("cloc: %.2f %.2f and pp: %.2f, %.2f with distance %.2f and control_radius %.2f", self.cLoc.x, self.cLoc.y, pp[i].x, pp[i].y, dd, self.control_radius)
+        if dd < self.control_radius:
           self.carrot.x = pp[i].x
           self.carrot.y = pp[i].y
           self.carrot.z = pp[i].z
@@ -278,6 +259,9 @@ class PID_Controller(object):
           self.carrot.fs = pp[i].fs
           self.make_rviz_marker(self.carrot, i, 0.0,0.0,1.0,2.0,0.1)
           return
+      rospy.logerr("could not update carrot")
+    else:
+      rospy.logwarn("PID_Controller::update_goal: len(path) < 1")
 
   def bearing_alignment(self, a, b):
     tpi = 6.28318530718
@@ -299,17 +283,22 @@ class PID_Controller(object):
 
   def control_cruise(self):
     if self.initialized == False:
+      rospy.logwarn("PID_Controller::control_cruise: Quad not initialized")
       return
 
+    #rospy.loginfo("PID_Controller::in control_cruise")
     if self.goal_initialized == False:
-      self.carrot.x = self.cLoc.x
-      self.carrot.y = self.cLoc.y
-      self.carrot.z = self.cLoc.z
-    elif len(self.path) > 1:
+      #rospy.logwarn("PID_Controller::control_cruise: Goal not initialized")
+      self.carrot.x = self.start.x
+      self.carrot.y = self.start.y
+      self.carrot.z = self.goal.z
+    elif len(self.path) > 1 or self.use_naive_pid:
       self.update_goal()
+    #else:
+    #  rospy.logwarn("PID_Controller::control_cruise: path < 1")
 
     self.in_loop = True
-    
+    #rospy.logwarn("PID_Controller::control_cruise: in loop")
     self.limit_goals()
 
 
@@ -317,8 +306,10 @@ class PID_Controller(object):
     #self.cLoc.y = 81
     #self.cLoc.t = -1.88
 
-    #print "******************** Goal *******************************"
+    #print "******************** Carrot *******************************"
     #self.carrot.print_state()
+    #print "******************** Goal *******************************"
+    #self.goal.print_state()
     #print "******************** cLoc *******************************"
     #self.cLoc.print_state()
 
@@ -351,11 +342,9 @@ class PID_Controller(object):
       err.t = 0.0
       err.ts = 0.0
 
-    #else:
-    #  err.x = err.x * (1.0 - (abs(err.t) / pi/24.0)) * (1.0-abs(err.z))
-    #  err.y = err.y * (1.0 - (abs(err.t) / pi/24.0)) * (1.0-abs(err.z))
-    #  err.fs = err.fs * (1.0 - (abs(err.t) / pi/24.0)) * (1.0-abs(err.z))
-    
+    #print "error: "
+    #err.print_state()
+
     pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
     pid.fs = self.pid_cruise_gains.fs * err.fs + self.pid_cruise_gains.x * err.x
     pid.ps = self.pid_cruise_gains.ps * err.ps + self.pid_cruise_gains.y * err.y
