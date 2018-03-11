@@ -6,7 +6,9 @@ import numpy as np
 from random import *
 import sys, termios, tty, select, os
 from dji_sdk.dji_drone import DJIDrone
-import dji_sdk.msg 
+import dji_sdk.msg
+import dji_sdk.srv
+from dji_sdk.msg import GlobalPosition, TransparentTransmissionData, RCChannels
 
 from custom_messages.msg import DMCTS_Travel_Goal
 from custom_messages.srv import Get_A_Star_Path
@@ -32,7 +34,6 @@ class State(object):
 
 
 class PID_Controller(object):
-  drone = DJIDrone()
   index = 0
   agent_type = 0
   start = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
@@ -55,7 +56,9 @@ class PID_Controller(object):
   goal_tolerance = 0.5
   control_radius = 5.0
 
-  def init(self, ai, aa, cs):
+  def init(self, drone, ai, aa, cs):
+    self.drone = drone
+    self.drone.request_sdk_permission_control() #Request to obtain control
     self.max_state.fs = cs
     self.min_state.fs = -cs;
     # Initial values
@@ -66,7 +69,7 @@ class PID_Controller(object):
     self.pub_twist = rospy.Publisher('/uav' + str(self.index) + '/cmd_vel', Twist, queue_size=10)
     self.pub_marker = rospy.Publisher('/PID_Control/path_markers', Marker, queue_size=1)
     # Setup subscriber
-    self.sub_odom = rospy.Subscriber('/uav' + str(self.index) + '/ground_truth/state', Odometry, self.odom_callback )
+    self.sub_odom = rospy.Subscriber('/local/odom', Odometry, self.odom_callback )
     self.goal_sub = rospy.Subscriber('/dmcts_' + str(self.index) + '/travel_goal', DMCTS_Travel_Goal, self.goal_callback )
     self.a_star_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
     
@@ -77,38 +80,18 @@ class PID_Controller(object):
     # map number, ensure I am planning from the right space
     self.map_num = -1
 
-    # only needs to work once
-    try:
-      enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
-      enable_motors(True)
-      self.motors_are_on = True
-
-    except:
-      rospy.logwarn('/uav' + str(self.index) + ' could not enable_motors')
-      self.motors_are_on = False
-
     self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_timer_callback)
 
 
   def control_timer_callback(self, event):
     #rospy.logwarn("PID_Controller::control_timer_callback: in")
-    if not self.motors_are_on:
-      try:
-        enable_motors = rospy.ServiceProxy('/uav' + str(self.index) + '/enable_motors', EnableMotors)
-        enable_motors(True)
-        self.motors_are_on = True
-      except:
-        rospy.logwarn('/uav' + str(self.index) + ' could not enable_motors')
-        rospy.sleep(3)
-        self.motors_are_on = False
+    #rospy.loginfo("control_callback: going into control")
+    d = math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2)
+    #print "D: ", d, " with goal: ", self.goal.x, ", ", self.goal.y, " and cLoc: ", self.cLoc.x, ", ", self.cLoc.y
+    if math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2) < self.control_radius:
+      self.control_approach() ## close to goal, slow down
     else:
-      #rospy.loginfo("control_callback: going into control")
-      d = math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2)
-      #print "D: ", d, " with goal: ", self.goal.x, ", ", self.goal.y, " and cLoc: ", self.cLoc.x, ", ", self.cLoc.y
-      if math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2) < self.control_radius:
-        self.control_approach() ## close to goal, slow down
-      else:
-        self.control_cruise() ## cruising controller
+      self.control_cruise() ## cruising controller
 
   def make_rviz_marker(self, p, i, r, g, b, s,d):
     m = Marker()
@@ -205,6 +188,7 @@ class PID_Controller(object):
 
   def odom_callback(self, msg):
     #rospy.logwarn("PID_Controller::odom_callback: in")
+    #self.drone.request_sdk_permission_control() #Request to obtain control
     if self.in_loop == False:
       yaw = self.quaternions_to_RPY([msg.pose.pose.orientation.x,msg.pose.pose.orientation.y,msg.pose.pose.orientation.z,msg.pose.pose.orientation.w])
       self.cLoc.x = msg.pose.pose.position.x
@@ -369,14 +353,18 @@ class PID_Controller(object):
     self.pid_mean.zs = self.pid_mean.zs - alpha[2]*(self.pid_mean.zs-pid.zs)
     self.pid_mean.ts = pid.ts
 
-    twist = Twist()  
-    twist.linear.x = self.pid_mean.fs
-    twist.linear.y = self.pid_mean.ps
-    twist.linear.z = self.pid_mean.zs
-    twist.angular.z = self.pid_mean.ts
+
+    #print "pid: ", self.pid_mean.fs
+
+    self.drone.velocity_control(1,self.pid_mean.fs,self.pid_mean.ps, self.pid_mean.zs, self.pid_mean.ts)
+    #twist = Twist()  
+    #twist.linear.x = self.pid_mean.fs
+    #twist.linear.y = self.pid_mean.ps
+    #twist.linear.z = self.pid_mean.zs
+    #twist.angular.z = self.pid_mean.ts#
 
     #print "twist: ", twist
-    self.pub_twist.publish(twist) 
+    #self.pub_twist.publish(twist) 
     self.in_loop = False
 
   def control_approach(self):
@@ -443,14 +431,15 @@ class PID_Controller(object):
     self.pid_mean.zs = self.pid_mean.zs - alpha[2]*(self.pid_mean.zs-pid.zs)
     self.pid_mean.ts = pid.ts
 
-    twist = Twist()  
-    twist.linear.x = self.pid_mean.fs
-    twist.linear.y = self.pid_mean.ps
-    twist.linear.z = self.pid_mean.zs
-    twist.angular.z = self.pid_mean.ts
+    self.drone.velocity_control(1,self.pid_mean.fs,self.pid_mean.ps, self.pid_mean.zs, self.pid_mean.ts)
+    #twist = Twist()  
+    #twist.linear.x = self.pid_mean.fs
+    #twist.linear.y = self.pid_mean.ps
+    #twist.linear.z = self.pid_mean.zs
+    #twist.angular.z = self.pid_mean.ts#
 
     #print "twist: ", twist
-    self.pub_twist.publish(twist) 
+    #self.pub_twist.publish(twist) 
     self.in_loop = False
 
 
@@ -487,8 +476,7 @@ class PID_Controller(object):
     #roll   = math.atan2(2.0 * (q[3] * q[0] + q[1] * q[2]) , - 1.0 + 2.0 * (q[0] * q[0] + q[1] * q[1]) )
     return yaw
     
-if __name__ == '__main__':
-  rospy.init_node('pid_postion_control')
+if __name__ == "__main__":
   pid = PID_Controller()
   ai = rospy.get_param('/agent_index')
   aa = rospy.get_param('/desired_altitude')
@@ -499,6 +487,8 @@ if __name__ == '__main__':
   rospy.loginfo(" Quad PID Controller::agent altitude: %.1f", aa)
   rospy.loginfo(" Quad PID Controller::cruising speed: %.1f", cs)
   
-  pid.init(ai, aa, cs)
+  drone = DJIDrone()
+  
+  pid.init(drone, ai, aa, cs)
   rospy.loginfo("Quad PID Controller::initialized")
   rospy.spin()
