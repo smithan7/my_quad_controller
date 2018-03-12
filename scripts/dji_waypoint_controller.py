@@ -41,10 +41,10 @@ class PID_Controller(object):
   cLoc = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   carrot = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
   goal = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
-  pid_cruise_gains = State(1.0,0.1,0.75,2.0,8.0,4.0,0.1,0.75)
-  pid_approach_gains = State(0.5,0.5,0.75,2.0,1.0,1.0,0.1,0.75)
-  max_state = State(50.0,50.0,30.0,50.0,2.0,0.2,1.0,1.0)
-  min_state = State(-50.0,-50.0,2.0,-50.0,-1.0,-0.2,-1.0,-1.0)
+  pid_cruise_gains =   State( 1.0, 0.1,  1.0, 200.0, 0.0, 0.0, 5.0, 100.0)
+  pid_approach_gains = State( 0.5, 0.5, 0.75, 200.0, 0.0, 0.0, 3.0, 100.0)
+  max_state = State( 200.0, 200.0,40.0, 50.0, 1.0, 0.2, 1.0,100.0)
+  min_state = State(-200.0,-200.0, 2.0,-50.0,-0.5,-0.2,-1.0,-100.0)
   pid_mean = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
   goal_index = -1
   
@@ -65,7 +65,6 @@ class PID_Controller(object):
     self.velocity_client = rospy.ServiceProxy('/dji_sdk/velocity_control', VelocityControl)
     rospy.loginfo("DJI_CONTROLLER::Created DJI Services")
 
-
     self.max_state.fs = cs
     self.min_state.fs = -cs;
     # Initial values
@@ -81,8 +80,8 @@ class PID_Controller(object):
     self.a_star_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
     
     # which planner do I use?
-    self.use_naive_pid = False
-    self.use_a_star_path = True
+    self.use_naive_pid = True
+    self.use_a_star_path = False
 
     # map number, ensure I am planning from the right space
     self.map_num = -1
@@ -97,6 +96,8 @@ class PID_Controller(object):
   def control_timer_callback(self, event):     
     #rospy.logwarn("PID_Controller::control_timer_callback: in")
     #rospy.loginfo("control_callback: going into control")
+    self.control_global()
+    return
     d = math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2)
     #print "D: ", d, " with goal: ", self.goal.x, ", ", self.goal.y, " and cLoc: ", self.cLoc.x, ", ", self.cLoc.y
     if math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2) < self.control_radius:
@@ -275,6 +276,112 @@ class PID_Controller(object):
       a -= tpi
 
     return [a,b]
+
+  def control_global(self):
+  
+  2 things to try:
+    1 - What happens if I send a global navigation waypoint? Does quad stop, if not just send carrot / wp (d < 5m) at X Hz, where X Hz can be dropped significantly
+    2 - Forgot the second thing
+  
+    if self.initialized == False:
+      rospy.logwarn("PID_Controller::control_cruise: Quad not initialized")
+      return
+
+    #rospy.loginfo("PID_Controller::in control_cruise")
+    if self.goal_initialized == False:
+      #rospy.logwarn("PID_Controller::control_cruise: Goal not initialized")
+      self.carrot.x = self.start.x
+      self.carrot.y = self.start.y
+      self.carrot.z = self.goal.z
+    elif len(self.path) > 1 or self.use_naive_pid:
+      self.update_goal()
+    #else:
+    #  rospy.logwarn("PID_Controller::control_cruise: path < 1")
+
+    self.in_loop = True
+    #rospy.logwarn("PID_Controller::control_cruise: in loop")
+    self.limit_goals()
+
+
+    #self.cLoc.x = 33
+    #self.cLoc.y = 81
+    #self.cLoc.t = -1.88
+
+    #print "******************** Carrot *******************************"
+    #self.carrot.print_state()
+    #print "******************** Goal *******************************"
+    #self.goal.print_state()
+    #print "******************** cLoc *******************************"
+    #self.cLoc.print_state()
+
+    pi = 3.14159265359
+    tpi = 6.28318530718
+
+    # theta = 0 -> 2*pi
+    self.cLoc.t += tpi
+    self.cLoc.t = self.cLoc.t % tpi
+
+    # fix roll over
+    [self.carrot.t, self.cLoc.t] = self.bearing_alignment(self.carrot.t, self.cLoc.t)
+    
+    # get error
+    err = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,fs,ps,zs,ts
+    err.x = self.carrot.x - self.cLoc.x
+    err.y = self.carrot.y - self.cLoc.y
+    err.z = self.carrot.z - self.cLoc.z
+    err.t = self.carrot.t - self.cLoc.t
+
+    err.fs = self.carrot.fs - self.cLoc.fs
+    err.zs = self.carrot.zs - self.cLoc.zs
+    err.ts = self.carrot.ts - self.cLoc.ts
+
+    # put in some safety stuff
+    # don't spin at goal
+    if abs(err.x) + abs(err.y) < self.goal_tolerance:
+      err.t = 0.0
+      err.ts = 0.0
+
+    #print "error: "
+    #err.print_state()
+
+    pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
+    pid.fs = self.pid_cruise_gains.fs * err.fs + self.pid_cruise_gains.x * err.x
+    pid.ps = self.pid_cruise_gains.fs * err.ps + self.pid_cruise_gains.x * err.y
+    pid.zs = self.pid_cruise_gains.zs * err.zs + self.pid_cruise_gains.z * err.z
+    pid.ts = self.pid_cruise_gains.ts * err.ts + self.pid_cruise_gains.t * err.t
+ 
+    # don't travel while at the wrong alt or pointing in the wrong direction
+    #if abs(err.z) >= 1.0 or abs(err.t) >= pi/12.0:
+    #  pid.fs = 0.0
+    #  pid.ps = 0.0
+
+    #print "***************************** pid ***************************"
+    #pid.print_state()
+
+    #pid = self.limit_twist_out(pid)
+    
+    # Not close to goal, do some smoothing
+    alpha = [0.05, 0.5, 0.9]
+    self.pid_mean.fs = self.pid_mean.fs - alpha[0]*(self.pid_mean.fs-pid.fs)
+    self.pid_mean.ps = self.pid_mean.ps - alpha[1]*(self.pid_mean.ps-pid.ps)
+    self.pid_mean.zs = self.pid_mean.zs - alpha[2]*(self.pid_mean.zs-pid.zs)
+    self.pid_mean.ts = pid.ts
+
+
+    #print "pid: ", self.pid_mean.fs
+    resp = self.velocity_client(1,-self.pid_mean.ps,self.pid_mean.fs, self.pid_mean.zs, self.pid_mean.ts)
+    if not resp:
+        self.dji_active = self.activation_client()
+        rospy.logwarn("DJI_CONTROLLER:: failed to send velocity command")
+    twist = Twist()  
+    twist.linear.x = self.pid_mean.fs
+    twist.linear.y = self.pid_mean.ps
+    twist.linear.z = self.pid_mean.zs
+    twist.angular.z = self.pid_mean.ts#
+
+    #print "twist: ", twist
+    self.pub_twist.publish(twist) 
+    self.in_loop = False
 
   def control_cruise(self):
     if self.initialized == False:
