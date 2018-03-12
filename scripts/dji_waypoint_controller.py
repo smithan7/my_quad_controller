@@ -9,6 +9,7 @@ from dji_sdk.dji_drone import DJIDrone
 import dji_sdk.msg
 import dji_sdk.srv
 from dji_sdk.msg import GlobalPosition, TransparentTransmissionData, RCChannels
+from dji_sdk.srv import Activation, VelocityControl
 
 from custom_messages.msg import DMCTS_Travel_Goal
 from custom_messages.srv import Get_A_Star_Path
@@ -57,8 +58,14 @@ class PID_Controller(object):
   control_radius = 5.0
 
   def init(self, drone, ai, aa, cs):
-    self.drone = drone
+    
+    self.drone = drone    
     self.drone.request_sdk_permission_control() #Request to obtain control
+    rospy.loginfo("DJI_CONTROLLER::Creating DJI Services")
+    self.velocity_client = rospy.ServiceProxy('/dji_sdk/velocity_control', VelocityControl)
+    rospy.loginfo("DJI_CONTROLLER::Created DJI Services")
+
+
     self.max_state.fs = cs
     self.min_state.fs = -cs;
     # Initial values
@@ -81,9 +88,13 @@ class PID_Controller(object):
     self.map_num = -1
 
     self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_timer_callback)
+    self.activation_timer = rospy.Timer(rospy.Duration(3.0), self.activation_timer_callback)
 
 
-  def control_timer_callback(self, event):
+  def activation_timer_callback(self, event):
+    self.drone.request_sdk_permission_control() #Request to obtain control
+
+  def control_timer_callback(self, event):     
     #rospy.logwarn("PID_Controller::control_timer_callback: in")
     #rospy.loginfo("control_callback: going into control")
     d = math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2)
@@ -95,7 +106,7 @@ class PID_Controller(object):
 
   def make_rviz_marker(self, p, i, r, g, b, s,d):
     m = Marker()
-    m.header.frame_id = "/uav0/world"
+    m.header.frame_id = "/world"
     m.header.stamp    = rospy.get_rostime()
     m.ns = "robot"
     m.id = i
@@ -188,7 +199,6 @@ class PID_Controller(object):
 
   def odom_callback(self, msg):
     #rospy.logwarn("PID_Controller::odom_callback: in")
-    #self.drone.request_sdk_permission_control() #Request to obtain control
     if self.in_loop == False:
       yaw = self.quaternions_to_RPY([msg.pose.pose.orientation.x,msg.pose.pose.orientation.y,msg.pose.pose.orientation.z,msg.pose.pose.orientation.w])
       self.cLoc.x = msg.pose.pose.position.x
@@ -355,16 +365,18 @@ class PID_Controller(object):
 
 
     #print "pid: ", self.pid_mean.fs
-
-    self.drone.velocity_control(1,self.pid_mean.fs,self.pid_mean.ps, self.pid_mean.zs, self.pid_mean.ts)
-    #twist = Twist()  
-    #twist.linear.x = self.pid_mean.fs
-    #twist.linear.y = self.pid_mean.ps
-    #twist.linear.z = self.pid_mean.zs
-    #twist.angular.z = self.pid_mean.ts#
+    resp = self.velocity_client(0,self.pid_mean.fs,self.pid_mean.ps, self.pid_mean.zs, self.pid_mean.ts)
+    if not resp:
+        self.dji_active = self.activation_client()
+        rospy.logwarn("DJI_CONTROLLER:: failed to send velocity command")
+    twist = Twist()  
+    twist.linear.x = self.pid_mean.fs
+    twist.linear.y = self.pid_mean.ps
+    twist.linear.z = self.pid_mean.zs
+    twist.angular.z = self.pid_mean.ts#
 
     #print "twist: ", twist
-    #self.pub_twist.publish(twist) 
+    self.pub_twist.publish(twist) 
     self.in_loop = False
 
   def control_approach(self):
@@ -430,16 +442,18 @@ class PID_Controller(object):
     self.pid_mean.ps = self.pid_mean.ps - alpha[1]*(self.pid_mean.ps-pid.ps)
     self.pid_mean.zs = self.pid_mean.zs - alpha[2]*(self.pid_mean.zs-pid.zs)
     self.pid_mean.ts = pid.ts
-
-    self.drone.velocity_control(1,self.pid_mean.fs,self.pid_mean.ps, self.pid_mean.zs, self.pid_mean.ts)
-    #twist = Twist()  
-    #twist.linear.x = self.pid_mean.fs
-    #twist.linear.y = self.pid_mean.ps
-    #twist.linear.z = self.pid_mean.zs
-    #twist.angular.z = self.pid_mean.ts#
+    resp = self.velocity_client(0,self.pid_mean.fs,self.pid_mean.ps, self.pid_mean.zs, self.pid_mean.ts)
+    if not resp:
+        self.dji_active = self.activation_client()
+        rospy.logwarn("DJI_CONTROLLER:: failed to send velocity command")
+    twist = Twist()  
+    twist.linear.x = self.pid_mean.fs
+    twist.linear.y = self.pid_mean.ps
+    twist.linear.z = self.pid_mean.zs
+    twist.angular.z = self.pid_mean.ts
 
     #print "twist: ", twist
-    #self.pub_twist.publish(twist) 
+    self.pub_twist.publish(twist) 
     self.in_loop = False
 
 
@@ -477,6 +491,7 @@ class PID_Controller(object):
     return yaw
     
 if __name__ == "__main__":
+  drone = DJIDrone()
   pid = PID_Controller()
   ai = rospy.get_param('/agent_index')
   aa = rospy.get_param('/desired_altitude')
@@ -486,8 +501,6 @@ if __name__ == "__main__":
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
   rospy.loginfo(" Quad PID Controller::agent altitude: %.1f", aa)
   rospy.loginfo(" Quad PID Controller::cruising speed: %.1f", cs)
-  
-  drone = DJIDrone()
   
   pid.init(drone, ai, aa, cs)
   rospy.loginfo("Quad PID Controller::initialized")
