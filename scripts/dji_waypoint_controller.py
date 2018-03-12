@@ -88,7 +88,7 @@ class PID_Controller(object):
     self.map_num = -1
 
     self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_timer_callback)
-    self.activation_timer = rospy.Timer(rospy.Duration(3.0), self.activation_timer_callback)
+    self.activation_timer = rospy.Timer(rospy.Duration(10.0), self.activation_timer_callback)
 
 
   def activation_timer_callback(self, event):
