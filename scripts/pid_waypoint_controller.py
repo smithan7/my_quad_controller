@@ -490,8 +490,11 @@ if __name__ == '__main__':
   rospy.init_node('pid_postion_control')
   pid = PID_Controller()
   ai = rospy.get_param('/agent_index')
-  aa = rospy.get_param('/desired_altitude')
-  cs = rospy.get_param('/cruising_speed')
+  aa = rospy.get_param('/agent_altitudes')
+  cs = rospy.get_param('/cruising_speeds')
+
+  cs = cs[ai]
+  aa = aa[ai]
 
   rospy.loginfo("Quad PID Controller::initializing")
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
