@@ -88,7 +88,7 @@ class PID_Controller(object):
     # map number, ensure I am planning from the right space
     self.map_num = -1
 
-    self.control_timer = rospy.Timer(rospy.Duration(2.0), self.control_timer_callback)
+    self.control_timer = rospy.Timer(rospy.Duration(0.2), self.control_timer_callback)
     self.activation_timer = rospy.Timer(rospy.Duration(10.0), self.activation_timer_callback)
 
 
