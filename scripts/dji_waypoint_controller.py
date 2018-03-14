@@ -138,10 +138,10 @@ class PID_Controller(object):
         return True
     
     try:
-      rospy.logwarn("PID_Controller::call_a_star_path_service:: in: start: %.2f, %.2f", self.cLoc.x, self.cLoc.y)
-      rospy.logwarn("PID_Controller::call_a_star_path_service:: in: goal: %.2f, %.2f", gx, gy)
+      #rospy.logwarn("PID_Controller::call_a_star_path_service:: in: start: %.2f, %.2f", self.cLoc.x, self.cLoc.y)
+      #rospy.logwarn("PID_Controller::call_a_star_path_service:: in: goal: %.2f, %.2f", gx, gy)
       resp = self.a_star_client(self.cLoc.x, self.cLoc.y, float(gx), float(gy), self.map_num)
-      rospy.logwarn("call_a_star_path_service:: out with path len %i", len(resp.xs))
+      #rospy.logwarn("call_a_star_path_service:: out with path len %i", len(resp.xs))
       if resp.success:
         self.path = []
         #path_str = []
@@ -162,7 +162,7 @@ class PID_Controller(object):
       rospy.logerr("PID Controller:: Failed to call A* service")
 
   def goal_callback(self, msg):
-    rospy.loginfo("PID_Controller::goal_callback: goal_in: %0.2f, %0.2f from loc %.2f, %.2f", msg.x,msg.y, self.cLoc.x, self.cLoc.y)
+    #rospy.loginfo("PID_Controller::goal_callback: goal_in: %0.2f, %0.2f from loc %.2f, %.2f", msg.x,msg.y, self.cLoc.x, self.cLoc.y)
     #if self.goal.x == msg.x and self.goal.y == msg.y:
     #  return
     if self.use_naive_pid:
@@ -310,10 +310,10 @@ class PID_Controller(object):
     #self.cLoc.t = -1.88
     
     
-    print "******************** Goal *******************************"
-    self.goal.print_state()
-    print "******************** cLoc *******************************"
-    self.cLoc.print_state()
+    #print "******************** Goal *******************************"
+    #self.goal.print_state()
+    #print "******************** cLoc *******************************"
+    #self.cLoc.print_state()
 
     pi = 3.14159265359
     tpi = 6.28318530718
@@ -334,8 +334,8 @@ class PID_Controller(object):
     err.z = self.carrot.z - self.cLoc.z
     err.t = self.carrot.t - self.cLoc.t
 
-    print "******************** Carrot *******************************"
-    self.carrot.print_state()
+    #print "******************** Carrot *******************************"
+    #self.carrot.print_state()
 
     err.fs = self.carrot.fs - self.cLoc.fs
     err.zs = self.carrot.zs - self.cLoc.zs
@@ -347,8 +347,8 @@ class PID_Controller(object):
       err.t = 0.0
       err.ts = 0.0
 
-    print "************************** error ************************************** "
-    err.print_state()
+    #print "************************** error ************************************** "
+    #err.print_state()
     
     self.max_state = State( 200.0, 200.0,40.0, 50.0, 2.0, 2.0, 1.0,100.0)
     self.min_state = State(-200.0,-200.0, 2.0,-50.0,-2.0,-2.0,-1.0,-100.0)
@@ -617,8 +617,11 @@ if __name__ == "__main__":
   drone = DJIDrone()
   pid = PID_Controller()
   ai = rospy.get_param('/agent_index')
-  aa = rospy.get_param('/desired_altitude')
-  cs = rospy.get_param('/cruising_speed')
+  aa = rospy.get_param('/agent_altitudes')
+  cs = rospy.get_param('/cruising_speeds')
+
+  cs = cs[ai]
+  aa = aa[ai]
 
   rospy.loginfo("Quad PID Controller::initializing")
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
