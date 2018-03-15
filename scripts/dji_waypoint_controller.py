@@ -53,7 +53,8 @@ class PID_Controller(object):
   update_rate = 100 # hz
   in_loop = False
   initialized = False
-  goal_initialized = True
+  goal_initialized = False
+  path_initialized = False
   path = []
 
   goal_tolerance = 1.0
@@ -92,9 +93,17 @@ class PID_Controller(object):
     # map number, ensure I am planning from the right space
     self.map_num = -1
 
+    # basically used to see how long ago the path was updated
+    self.path_valid_duration = rospy.Duration(2.0)
+    self.path_update_time = rospy.Time(-10000.0)
+
+    # main control loop that outputs commands to the DJI quad
     self.control_timer = rospy.Timer(rospy.Duration(0.025), self.control_timer_callback)
+    # calls the costmap planner and requests a path
     self.path_timer = rospy.Timer(rospy.Duration(1.0), self.path_timer_callback)
+    # updates the carrot
     self.carrot_timer = rospy.Timer(rospy.Duration(0.1), self.carrot_timer_callback)
+    # activates the quad
     self.activation_timer = rospy.Timer(rospy.Duration(10.0), self.activation_timer_callback)
 
   def activation_timer_callback(self, event):
@@ -111,6 +120,9 @@ class PID_Controller(object):
         self.good_carrot = self.update_carrot()
 
   def path_timer_callback(self, event):
+    self.request_path()
+
+  def request_path(self):
     # this updates the path using the costmap
     if self.use_naive_pid:
       self.path = []
@@ -124,9 +136,7 @@ class PID_Controller(object):
       path_out = Path()
       path_out.poses.append(start)
       path_out.poses.append(goal)
-      print "path_out 1"
       self.pub_path_request.publish(path_out)
-      print "path_out 2"
       #if self.call_a_star_path_service(self.goal.x, self.goal.y):
       #  self.goal_initialized = True
       #  a = State(self.goal.x, self.goal.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -142,10 +152,10 @@ class PID_Controller(object):
     #for i, p in enumerate(self.path):
     #  self.make_rviz_marker(p, i, 1.0,0.0,0.0,0.5,10.0)
     
-  def path_callback(self, path):
-    
-    self.goal_initialized = True
-    rospy.loginfo("PID_Controller::goal_callback: path set")
+  def path_callback(self, path):  
+    self.path_initialized = True
+    self.path_update_time = rospy.Time.now()
+    #rospy.loginfo("PID_Controller::goal_callback: path set")
     self.path = []
     for pose in path.poses:
         pp = State(pose.pose.position.x, pose.pose.position.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -153,9 +163,11 @@ class PID_Controller(object):
     
     a = State(self.goal.x, self.goal.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0)
     self.path.append(a)
-    
-
+  
   def control_timer_callback(self, event):    
+    if rospy.TIme.now() - self.path_timer > self.path_valid_duration:
+        self.path_initialized = False
+        rospy.logwarn("PID_Controller::Path Not updated")
     #rospy.logwarn("PID_Controller::control_timer_callback: in")
     self.control_global()
 
@@ -219,7 +231,7 @@ class PID_Controller(object):
     self.goal.y = msg.y
     self.goal_initialized = True
     self.make_rviz_marker(self.goal, 99, 0.0,0.0,1.0,1.5,10.0)
-    
+    self.request_path()
 
   def odom_callback(self, msg):
     #rospy.logwarn("PID_Controller::odom_callback: in")
@@ -327,7 +339,7 @@ class PID_Controller(object):
       self.carrot.z = self.goal.z
     #elif len(self.path) > 1 or self.use_naive_pid:
 
-    if not self.good_carrot:
+    if not self.good_carrot or not self.path_initialized:
       ez = self.carrot.z - self.cLoc.z
       ezs = self.carrot.zs - self.cLoc.zs
       pzs = self.pid_global_gains.zs * ezs + self.pid_global_gains.z * ez
