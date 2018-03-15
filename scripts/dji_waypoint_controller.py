@@ -145,9 +145,15 @@ class PID_Controller(object):
   def path_callback(self, path):
     
     self.goal_initialized = True
-    a = State(self.goal.x, self.goal.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
-    self.path.append(a)
     rospy.loginfo("PID_Controller::goal_callback: path set")
+    self.path = []
+    for pose in path.poses:
+        pp = State(pose.pose.position.x, pose.pose.position.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self.path.append(pp)
+    
+    a = State(self.goal.x, self.goal.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0)
+    self.path.append(a)
+    
 
   def control_timer_callback(self, event):    
     #rospy.logwarn("PID_Controller::control_timer_callback: in")
