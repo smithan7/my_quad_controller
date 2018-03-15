@@ -15,6 +15,7 @@ from custom_messages.msg import DMCTS_Travel_Goal
 from custom_messages.srv import Get_A_Star_Path
 from geometry_msgs.msg import Twist, Pose, Point, PoseStamped
 from nav_msgs.msg import Odometry, Path
+from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
 
 class State(object):
@@ -43,6 +44,7 @@ class PID_Controller(object):
   goal = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0) # x,y,z,t,xs,ys,zs,ts
   
   pid_global_gains =   State( 0.5, 0.5,  0.5, 200.0, 0.0, 0.0, 0.1, 10.0)
+  sum_err = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
   max_state = State( 200.0, 200.0,40.0, 50.0, 0.1, 0.1, 1.0,100.0)
   min_state = State(-200.0,-200.0, 2.0,-50.0,-0.1,-0.1,-1.0,-100.0)
   pid_mean = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
@@ -80,6 +82,8 @@ class PID_Controller(object):
     self.sub_odom = rospy.Subscriber('/local/odom', Odometry, self.odom_callback,  queue_size=1 )
     self.goal_sub = rospy.Subscriber('/dmcts_' + str(self.index) + '/travel_goal', DMCTS_Travel_Goal, self.goal_callback,  queue_size=1 )
     self.a_star_client = rospy.ServiceProxy('/dmcts_' + str(self.index) + '/costmap_bridge/a_star_path', Get_A_Star_Path)
+    self.pub_path_request = rospy.Publisher('/costmap/a_star_path_request', Path, queue_size=1)
+    self.sub_path_request = rospy.Subscriber('/costmap/a_star_path_response', Path, self.path_callback, queue_size=1)
     
     # which planner do I use?
     self.use_naive_pid = False
@@ -88,8 +92,8 @@ class PID_Controller(object):
     # map number, ensure I am planning from the right space
     self.map_num = -1
 
-    self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_timer_callback)
-    self.path_timer = rospy.Timer(rospy.Duration(0.5), self.path_timer_callback)
+    self.control_timer = rospy.Timer(rospy.Duration(0.025), self.control_timer_callback)
+    self.path_timer = rospy.Timer(rospy.Duration(1.0), self.path_timer_callback)
     self.carrot_timer = rospy.Timer(rospy.Duration(0.1), self.carrot_timer_callback)
     self.activation_timer = rospy.Timer(rospy.Duration(10.0), self.activation_timer_callback)
 
@@ -111,20 +115,39 @@ class PID_Controller(object):
     if self.use_naive_pid:
       self.path = []
     elif self.use_a_star_path:
-      if self.call_a_star_path_service(msg.x, msg.y):
-        self.goal_initialized = True
-        a = State(msg.x, msg.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
-        self.path.append(a)
-        #rospy.loginfo("PID_Controller::goal_callback: path set")
-      else:
-        self.goal_initialized = False
-        rospy.logerr("PID_Controller::goal_callback: failed to get A* path")
+      start = PoseStamped()
+      start.pose.position.x = 5.0#self.cLoc.x
+      start.pose.position.y = 5.0#self.cLoc.y
+      goal = PoseStamped()
+      goal.pose.position.x = -1.0#self.goal.x
+      goal.pose.position.y = -1.0#self.goal.y
+      path_out = Path()
+      path_out.poses.append(start)
+      path_out.poses.append(goal)
+      print "path_out 1"
+      self.pub_path_request.publish(path_out)
+      print "path_out 2"
+      #if self.call_a_star_path_service(self.goal.x, self.goal.y):
+      #  self.goal_initialized = True
+      #  a = State(self.goal.x, self.goal.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
+      #  self.path.append(a)
+      #  #rospy.loginfo("PID_Controller::goal_callback: path set")
+      #else:
+      #  self.goal_initialized = False
+      #  rospy.logerr("PID_Controller::goal_callback: failed to get A* path")
     else:
       rospy.logerr("PID_Controller::goal_callback: NO PLANNING METHOD PROVIDED")
       self.goal_initialized = False
     
     #for i, p in enumerate(self.path):
     #  self.make_rviz_marker(p, i, 1.0,0.0,0.0,0.5,10.0)
+    
+  def path_callback(self, path):
+    
+    self.goal_initialized = True
+    a = State(self.goal.x, self.goal.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
+    self.path.append(a)
+    rospy.loginfo("PID_Controller::goal_callback: path set")
 
   def control_timer_callback(self, event):    
     #rospy.logwarn("PID_Controller::control_timer_callback: in")
@@ -303,6 +326,7 @@ class PID_Controller(object):
       ezs = self.carrot.zs - self.cLoc.zs
       pzs = self.pid_global_gains.zs * ezs + self.pid_global_gains.z * ez
       self.velocity_client(1,0.0,0.0, pzs, 0.0)
+      rospy.logwarn("PID_Controller::bad carrot")
       return
 
     self.in_loop = True
@@ -356,12 +380,22 @@ class PID_Controller(object):
     #print "************************** error ************************************** "
     #err.print_state()
     
-    pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
     
-    pid.xs = self.pid_global_gains.xs * err.xs + self.pid_global_gains.x * err.x
-    pid.ys = self.pid_global_gains.xs * err.ys + self.pid_global_gains.x * err.y
-    pid.zs = self.pid_global_gains.zs * err.zs + self.pid_global_gains.z * err.z
-    pid.ts = self.pid_global_gains.ts * err.ts + self.pid_global_gains.t * err.t
+    self.sum_err.x = min(10.0, max(self.sum_err.x + err.x,-10.0))
+    self.sum_err.y = min(10.0, max(self.sum_err.y + err.y,-10.0))
+    self.sum_err.z = min(10.0, max(self.sum_err.z + err.z,-10.0))
+    self.sum_err.t = min(10.0, max(self.sum_err.t + err.t,-10.0))
+    self.sum_err.xs = self.sum_err.xs + err.xs
+    self.sum_err.ys = self.sum_err.ys + err.ys
+    self.sum_err.zs = self.sum_err.zs + err.zs
+    self.sum_err.ts = self.sum_err.ts + err.ts
+    
+    pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
+    pid.xs = self.pid_global_gains.xs * err.xs + self.pid_global_gains.x * err.x + 0.01 * self.sum_err.x
+    pid.ys = self.pid_global_gains.xs * err.ys + self.pid_global_gains.x * err.y + 0.01 * self.sum_err.y
+    pid.zs = self.pid_global_gains.zs * err.zs + self.pid_global_gains.z * err.z + 0.01 * self.sum_err.z
+    pid.ts = self.pid_global_gains.ts * err.ts + self.pid_global_gains.t * err.t + 0.01 * self.sum_err.t
+    
     
  
     # don't travel while at the wrong alt or pointing in the wrong direction
@@ -381,7 +415,7 @@ class PID_Controller(object):
     #pid.print_state()
 
     
-    # Not close to goal, do some smoothing
+    # do some smoothing
     alpha = [0.5, 0.5, 0.9]
     self.pid_mean.xs = self.pid_mean.xs - alpha[0]*(self.pid_mean.xs-pid.xs)
     self.pid_mean.ys = self.pid_mean.ys - alpha[1]*(self.pid_mean.ys-pid.ys)
