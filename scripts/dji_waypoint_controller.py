@@ -88,24 +88,47 @@ class PID_Controller(object):
     # map number, ensure I am planning from the right space
     self.map_num = -1
 
-    self.control_timer = rospy.Timer(rospy.Duration(0.05), self.control_timer_callback)
+    self.control_timer = rospy.Timer(rospy.Duration(0.01), self.control_timer_callback)
+    self.path_timer = rospy.Timer(rospy.Duration(0.5), self.path_timer_callback)
+    self.carrot_timer = rospy.Timer(rospy.Duration(0.1), self.carrot_timer_callback)
     self.activation_timer = rospy.Timer(rospy.Duration(10.0), self.activation_timer_callback)
-
 
   def activation_timer_callback(self, event):
     self.drone.request_sdk_permission_control() #Request to obtain control
 
-  def control_timer_callback(self, event):     
-    #rospy.logwarn("PID_Controller::control_timer_callback: in")
-    #rospy.loginfo("control_callback: going into control")
-    self.control_global()
-    return
-    d = math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2)
-    #print "D: ", d, " with goal: ", self.goal.x, ", ", self.goal.y, " and cLoc: ", self.cLoc.x, ", ", self.cLoc.y
-    if math.sqrt((self.cLoc.x-self.goal.x)**2 + (self.cLoc.y-self.goal.y)**2) < self.control_radius:
-      self.control_approach() ## close to goal, slow down
+
+  def carrot_timer_callback(self, event):
+    if self.use_naive_pid:
+      self.path = []
+      self.carrot.x = msg.x
+      self.carrot.y = msg.y
+      self.good_carrot = True
+    elif self.use_a_star_path:
+        self.good_carrot = self.update_carrot()
+
+  def path_timer_callback(self, event):
+    # this updates the path using the costmap
+    if self.use_naive_pid:
+      self.path = []
+    elif self.use_a_star_path:
+      if self.call_a_star_path_service(msg.x, msg.y):
+        self.goal_initialized = True
+        a = State(msg.x, msg.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
+        self.path.append(a)
+        #rospy.loginfo("PID_Controller::goal_callback: path set")
+      else:
+        self.goal_initialized = False
+        rospy.logerr("PID_Controller::goal_callback: failed to get A* path")
     else:
-      self.control_cruise() ## cruising controller
+      rospy.logerr("PID_Controller::goal_callback: NO PLANNING METHOD PROVIDED")
+      self.goal_initialized = False
+    
+    #for i, p in enumerate(self.path):
+    #  self.make_rviz_marker(p, i, 1.0,0.0,0.0,0.5,10.0)
+
+  def control_timer_callback(self, event):    
+    #rospy.logwarn("PID_Controller::control_timer_callback: in")
+    self.control_global()
 
   def make_rviz_marker(self, p, i, r, g, b, s,d):
     m = Marker()
@@ -163,33 +186,9 @@ class PID_Controller(object):
 
   def goal_callback(self, msg):
     #rospy.loginfo("PID_Controller::goal_callback: goal_in: %0.2f, %0.2f from loc %.2f, %.2f", msg.x,msg.y, self.cLoc.x, self.cLoc.y)
-    #if self.goal.x == msg.x and self.goal.y == msg.y:
-    #  return
-    if self.use_naive_pid:
-      self.path = []
-      self.goal.x = msg.x
-      self.goal.y = msg.y
-      self.carrot.x = msg.x
-      self.carrot.y = msg.y
-      self.goal_initialized = True
-      #rospy.loginfo("PID_Controller::goal_callback: goal_set")
-    elif self.use_a_star_path:
-      if self.call_a_star_path_service(msg.x, msg.y):
-        self.goal_initialized = True
-        a = State(msg.x, msg.y, self.goal.z, 0.0, 0.0, 0.0, 0.0, 0.0);
-        self.path.append(a)
-        self.goal.x = msg.x
-        self.goal.y = msg.y
-        #rospy.loginfo("PID_Controller::goal_callback: path set")
-      else:
-        self.goal_initialized = False
-        rospy.logerr("PID_Controller::goal_callback: failed to get A* path")
-    else:
-      rospy.logerr("PID_Controller::goal_callback: NO PLANNING METHOD PROVIDED")
-      self.goal_initialized = False
-    
-    #for i, p in enumerate(self.path):
-    #  self.make_rviz_marker(p, i, 1.0,0.0,0.0,0.5,10.0)
+    self.goal.x = msg.x
+    self.goal.y = msg.y
+    self.goal_initialized = True
     self.make_rviz_marker(self.goal, 99, 0.0,0.0,1.0,1.5,10.0)
     
 
@@ -225,7 +224,7 @@ class PID_Controller(object):
     pid.ts = min(max(pid.ts, self.min_state.ts), self.max_state.ts)
     return pid
 
-  def update_goal(self):
+  def update_carrot(self):
     #rospy.loginfo("in update_goal")
     # check if I have a long path
     if self.use_naive_pid:
@@ -286,24 +285,25 @@ class PID_Controller(object):
   def control_global(self):
     # it might work to send local or global position
   
-    if self.initialized == False:
+    if not self.initialized:
       rospy.logwarn("PID_Controller::control_cruise: Quad not initialized")
+      rospy.sleep(1)
       return
 
     #rospy.loginfo("PID_Controller::in control_cruise")
-    if self.goal_initialized == False:
+    if not self.goal_initialized:
       #rospy.logwarn("PID_Controller::control_cruise: Goal not initialized")
       self.carrot.x = self.start.x
       self.carrot.y = self.start.y
       self.carrot.z = self.goal.z
     #elif len(self.path) > 1 or self.use_naive_pid:
-    else:
-        if not self.update_goal():
-            ez = self.carrot.z - self.cLoc.z
-            ezs = self.carrot.zs - self.cLoc.zs
-            pzs = self.pid_global_gains.zs * ezs + self.pid_global_gains.z * ez
-            self.velocity_client(1,0.0,0.0, pzs, 0.0)
-            return
+
+    if not self.good_carrot:
+      ez = self.carrot.z - self.cLoc.z
+      ezs = self.carrot.zs - self.cLoc.zs
+      pzs = self.pid_global_gains.zs * ezs + self.pid_global_gains.z * ez
+      self.velocity_client(1,0.0,0.0, pzs, 0.0)
+      return
 
     self.in_loop = True
     #rospy.logwarn("PID_Controller::control_cruise: in loop")
