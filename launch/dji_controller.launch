@@ -1,5 +1,5 @@
 <launch>
-	<node pkg="my_quad_controller" name="dji_controller" type="dji_waypoint_controller.py"/>
+	<node pkg="my_quad_controller" name="dji_controller" type="dji_waypoint_controller.py" output="screen"/>
 </launch>
 
 
