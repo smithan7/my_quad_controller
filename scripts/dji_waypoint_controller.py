@@ -476,6 +476,7 @@ if __name__ == "__main__":
   ai = rospy.get_param('/agent_index')
   aa = rospy.get_param('/agent_altitudes')
   cs = rospy.get_param('/cruising_speeds')
+  sp = rospy.get_param('/speed_penalty')
 
   cs = cs[ai]
   aa = aa[ai]
@@ -484,7 +485,8 @@ if __name__ == "__main__":
   rospy.loginfo(" Quad PID Controller::agent index: %i", ai)
   rospy.loginfo(" Quad PID Controller::agent altitude: %.1f", aa)
   rospy.loginfo(" Quad PID Controller::cruising speed: %.1f", cs)
-  
-  pid.init(drone, ai, aa, cs)
+  rospy.loginfo(" Quad PID Controller::speed penalty: %.1f", sp)
+    
+  pid.init(drone, ai, aa, cs * sp)
   rospy.loginfo("Quad PID Controller::initialized")
   rospy.spin()
