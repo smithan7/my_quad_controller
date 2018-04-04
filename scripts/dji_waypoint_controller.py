@@ -107,7 +107,7 @@ class PID_Controller(object):
     # calls the costmap planner and requests a path
     self.path_timer = rospy.Timer(rospy.Duration(0.5), self.path_timer_callback)
     # updates the carrot
-    self.carrot_timer = rospy.Timer(rospy.Duration(5.0), self.carrot_timer_callback)
+    self.carrot_timer = rospy.Timer(rospy.Duration(0.1), self.carrot_timer_callback)
     # activates the quad
     self.activation_timer = rospy.Timer(rospy.Duration(10.0), self.activation_timer_callback)
 
@@ -399,20 +399,23 @@ class PID_Controller(object):
     #err.print_state()
     
     
-    self.sum_err.x = min(10.0, max(self.sum_err.x + err.x,-10.0))
-    self.sum_err.y = min(10.0, max(self.sum_err.y + err.y,-10.0))
-    self.sum_err.z = min(10.0, max(self.sum_err.z + err.z,-10.0))
-    self.sum_err.t = min(10.0, max(self.sum_err.t + err.t,-10.0))
-    self.sum_err.xs = self.sum_err.xs + err.xs
-    self.sum_err.ys = self.sum_err.ys + err.ys
-    self.sum_err.zs = self.sum_err.zs + err.zs
-    self.sum_err.ts = self.sum_err.ts + err.ts
+    #self.sum_err.x = min(10.0, max(self.sum_err.x + err.x,-10.0))
+    #self.sum_err.y = min(10.0, max(self.sum_err.y + err.y,-10.0))
+    #self.sum_err.z = min(10.0, max(self.sum_err.z + err.z,-10.0))
+    #self.sum_err.t = min(10.0, max(self.sum_err.t + err.t,-10.0))
+    #self.sum_err.xs = self.sum_err.xs + err.xs
+    #self.sum_err.ys = self.sum_err.ys + err.ys
+    #self.sum_err.zs = self.sum_err.zs + err.zs
+    #self.sum_err.ts = self.sum_err.ts + err.ts
     
     pid = State(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0)
-    pid.xs = self.pid_global_gains.xs * err.xs + self.pid_global_gains.x * err.x + 0.0 * self.sum_err.x
-    pid.ys = self.pid_global_gains.xs * err.ys + self.pid_global_gains.x * err.y + 0.0 * self.sum_err.y
-    pid.zs = self.pid_global_gains.zs * err.zs + self.pid_global_gains.z * err.z + 0.0 * self.sum_err.z
-    pid.ts = 0.0*self.pid_global_gains.ts * err.ts + self.pid_global_gains.t * err.t + 0.0 * self.sum_err.t
+    self.pid_global_gains.xs = 0.0
+    self.pid_global_gains.ys = 0.0
+    
+    pid.xs = self.pid_global_gains.xs * err.xs + self.pid_global_gains.x * err.x# + 0.0 * self.sum_err.x
+    pid.ys = self.pid_global_gains.xs * err.ys + self.pid_global_gains.x * err.y# + 0.0 * self.sum_err.y
+    pid.zs = self.pid_global_gains.zs * err.zs + self.pid_global_gains.z * err.z# + 0.0 * self.sum_err.z
+    pid.ts = 0.0*self.pid_global_gains.ts * err.ts + self.pid_global_gains.t * err.t# + 0.0 * self.sum_err.t
 
     #print "***************************** pid-0 ***************************"
     #pid.print_state()
@@ -435,14 +438,14 @@ class PID_Controller(object):
 
     
     # do some smoothing
-    alpha = [0.5, 0.5, 0.9]
+    alpha = [0.75, 0.75, 0.9]
     self.pid_mean.xs = self.pid_mean.xs - alpha[0]*(self.pid_mean.xs-pid.xs)
     self.pid_mean.ys = self.pid_mean.ys - alpha[1]*(self.pid_mean.ys-pid.ys)
     self.pid_mean.zs = self.pid_mean.zs - alpha[2]*(self.pid_mean.zs-pid.zs)
     self.pid_mean.ts = pid.ts
     
-    resp = self.velocity_client(1,-5.5*pid.ys,5.5*pid.xs, self.pid_mean.zs, 0.5*self.pid_mean.ts)    
-    #resp = self.velocity_client(1,self.pid_mean.ys,-self.pid_mean.xs, self.pid_mean.zs, self.pid_mean.ts)
+    #resp = self.velocity_client(1,-5.5*pid.ys,5.5*pid.xs, self.pid_mean.zs, 0.5*self.pid_mean.ts)    
+    resp = self.velocity_client(1,-5.5*self.pid_mean.ys,5.5*self.pid_mean.xs, self.pid_mean.zs, 0.5*self.pid_mean.ts)
     if not resp:
         self.dji_active = self.activation_client()
         rospy.logwarn("DJI_CONTROLLER:: failed to send velocity command")
